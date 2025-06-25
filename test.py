@@ -20,24 +20,30 @@ print(s.model())
 # A fixed host network topology
 from z3 import *
 
+import sys
+print(sys.version)
+name = f"test_{1}"
+print(name)
+
 from queue_model import *
 
 ctx = Context()
 # 定义一个枚举类型 Status，有三个状态 [如果cpu或者iio设备不止一个，也要继续补充这个enumeration]
 ReqSource, (cpu, iio) = EnumSort('ReqSource', ['cpu', 'iio'], ctx=ctx)
 
-s = Solver(ctx=ctx)
-x, y = Ints('x y', ctx=ctx)
-ite1 = If(x>0, y==3, y==-3)
-ite2 = If(y>0, x==5, ite1)
+# 示例：嵌套 Sum 和 If
+queues = ['cha_raw', 'mc']
+time_steps = 2
+solver = Solver()
 
-# s.assert_and_track(ite1, 'ite1')
-s.assert_and_track(ite2, 'ite2')
-s.assert_and_track(x == 3, 'x_eq_3')
-s.assert_and_track(y == -3, 'y_eq_min3')
+# 创建 Z3 变量
+credits = [[Int(f"credit_{q}_at_time_{t}") for q in queues] for t in range(time_steps)]
+active = [[Int(f"active_{q}_at_time_{t}") > 0 for q in queues] for t in range(time_steps)]
 
-print(s.to_smt2())
-if s.check() == sat:
-    print(s.model())
-else:
-    print(s.unsat_core())
+# 嵌套 Sum(If(...))
+total_credit = Sum(*[Sum(*[If(active[t][i], credits[t][i], 0) for i in range(len(queues))]) for t in range(time_steps)])
+
+# 添加约束
+solver.add(total_credit >= 0)
+print(solver.check())  # sat
+print(solver.model())  # 示例模型

@@ -20,15 +20,13 @@ def concat_name(*args, separator: str = "_") -> str:
     return separator.join(str_args).upper()
 
 
+_count = 0
+
+
 def make_counter():
-    count = 0
-
-    def counter():
-        nonlocal count
-        count += 1
-        return count
-
-    return counter
+    global _count
+    _count += 1
+    return _count
 
 
 def get_name(*args):
@@ -39,6 +37,3 @@ def get_name(*args):
         for n in args:
             name = name + '_' + n
         return name
-
-
-
