@@ -1,5 +1,6 @@
 import json
 
+from tabulate import tabulate
 from z3 import Context, Solver, EnumSort, ExprRef, Bool, sat, ModelRef
 
 from util import make_counter
@@ -7,6 +8,8 @@ from util import make_counter
 # 以下是合法的source起点
 CPU = 'cpu'
 IIO = 'iio'
+
+
 
 
 """
@@ -41,18 +44,14 @@ class MySolver:
     def add_bool(self, name: str):
         return Bool(name=name, ctx=self.ctx)
 
-    def verify(self, ifsave=True, print_cons:bool = True):
+    def verify(self, ifsave=True, print_cons:bool =False):
         if self.solver.check() == sat:
             self.model = self.solver.model()
             print('SAT')
             self.save_model('smt_model')
-            for decl in self.model.decls():
-                var_name = decl.name()  # 获取变量名
-                if 'deq_cnt' in str(var_name):  # 检查是否包含特定字符串
-                    print(f"{var_name} = {self.model[decl]}")  # 输出变量名和值
         else:
             print('UNSAT')
-            self.prinf_unsat_core()
+            self.prinf_unsat_core(print_cons)
 
         self.save_smt2('smt.smt2')
 
@@ -73,12 +72,22 @@ class MySolver:
         with open("smt.smt2", "w") as f:
             f.write(self.solver.to_smt2())
 
-    def prinf_unsat_core(self):
+    def prinf_unsat_core(self, show_detail=False):
         for name in self.solver.unsat_core():
             cons = self.constraint_map.get(str(name), None)
             if cons is not None:
                 # print(f"{name} → {cons}")
-                print(f"{name} -> {cons}")
+                if show_detail:
+                    print(f"{name} -> {cons}")
+                else:
+                    print(name)
             else:
                 print(f"{name} → <no mapping found>")
 
+    # 获取一个值在model的取值
+    def evaluate(self, v: ExprRef):
+
+        if self.model[v] is not None:
+            return self.model.evaluate(v)
+        else:
+            return 'Any'

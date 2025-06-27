@@ -6,6 +6,11 @@ from my_solver import MySolver
 from queue_model import HNQueue
 from util import make_counter
 
+
+def z3_min(x, y):
+    return If(x <= y, x, y)
+
+
 """
 First-In-First-Out Scheduling
     Topology: q2[1:T][1:n] --> q1[1:T][1:m]
@@ -24,19 +29,26 @@ First-In-First-Out Scheduling
 """
 
 
-def z3_min(x, y):
-    return If(x <= y, x, y)
-
-
 def add_fifo_constraints(q1: HNQueue, q2: HNQueue, solver: MySolver):
     assert q1.time_steps == q2.time_steps
+    # q2是被pull元素的那个，如果q2有cache，实际被pull的队列是保存q2经过cache后的状态的队列(shadow)
+    if q2.cached:
+        q2 = q2.shadow_queue
     for t in range(1, q1.time_steps):
+        # 不由当前函数所决定的变量：
         q1_deq_t_1 = q1.deq_cnt[t - 1]
-        q2_deq_t_1 = q2.deq_cnt[t - 1]
         q1_cap = q1.cap_cnt[t]
+        q2_val_t_1 = q2.val_cnt[t - 1]
         q1_remain = q1.queue_size - q1_cap
-
-        # 使用条件语句设置q1中每一个元素的值，condition语句(cond)里都是用非零index做比较，assignment语句(asgn)里将index值统一减一
+        # 由当前函数决定的变量：设置q2的dequeue值的约束
+        q2_deq_t_1 = q2.deq_cnt[t - 1]
+        cond = q1_cap - q2_val_t_1 < 0
+        true_asgn = q2_deq_t_1 == q1_cap
+        false_asgn = q2_deq_t_1 == q2_val_t_1
+        name = f'cons_fifo_add_dequeue_for_{q1.queue_name}_at_time_{t}'
+        cons = If(cond, true_asgn, false_asgn)
+        solver.add_expr(name, cons)
+        # 由当前函数决定的变量：使用条件语句设置q1中每一个元素的值
         for nonzero_idx_i in range(1, q1.queue_size + 1):
             # 针对q1不同的dequeue值枚举
             for deq_var in range(q1.queue_size + 1):  # k是q1可能dequeue的数量
@@ -66,15 +78,6 @@ def add_fifo_constraints(q1: HNQueue, q2: HNQueue, solver: MySolver):
             name = f'cons_fifo_condition3_for_{q1.queue_name}_index_{nonzero_idx_i}_at_time_{t}'
             cons = Implies(cond, asgn)
             solver.add_expr(name, cons)
-
-        # 设置q2的dequeue值的约束
-        q2_val_t_1 = q2.val_cnt[t - 1]
-        cond = q1_cap - q2_val_t_1 < 0
-        true_asgn = q2_deq_t_1 == q1_cap
-        false_asgn = q2_deq_t_1 == q2_val_t_1
-        name = f'cons_fifo_add_dequeue_for_{q1.queue_name}_at_time_{t}'
-        cons = If(cond, true_asgn, false_asgn)
-        solver.add_expr(name, cons)
 
 
 """
@@ -150,13 +153,13 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                                            q1.queue_states[t][idx_i].get_eq_constraints(
                                                                q3.queue_states[t - 1][j // 2]
                                                            ),
-                                                           q1.queue_states[t][idx_i - 1].get_eq_constraints(
+                                                           q1.queue_states[t][idx_i].get_eq_constraints(
                                                                q2.queue_states[t - 1][j // 2]
                                                            )
                                                            )
                             cons = Implies(And(commenCond, idx_i - q1_remain <= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
                                            cons2_ite_q1_cap_not_even)
-                            solver.add_expr(name2, cons2_ite_q1_cap_not_even)
+                            solver.add_expr(name2, cons)
                         elif 0 <= j - q2_deq_var < q3.queue_size and 0 <= j - q3_deq_var < q2.queue_size:
                             name1 = f'cons_ite_{q2.queue_name}_deq_less_{q3.queue_name}_deq_at_time_{t}_*{make_counter()}'
                             cons1_ite_q2_deq_less_q3_deq = If(q2_deq_t_1 < q3_deq_t_1,
@@ -169,7 +172,7 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                                               )
                             cons = Implies(And(commenCond, idx_i - q1_remain > 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
                                            cons1_ite_q2_deq_less_q3_deq)
-                            solver.add_expr(name1, cons1_ite_q2_deq_less_q3_deq)
+                            solver.add_expr(name1, cons)
                         # name3 = f'cons_ite_within_in_turn_at_time_{t}_*{make_counter()}'
                         # cons3_ite_within_in_turn = If(j <= 2 * min(q2_deq_var, q3_deq_var),
                         #                         cons2_ite_q1_cap_not_even,

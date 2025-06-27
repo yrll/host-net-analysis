@@ -5,7 +5,7 @@ queue model是连接队列的组件 (参考 FPerf)
 """
 from __future__ import annotations
 
-from z3 import Context, Bool, Int, Const, ExprRef, And, Not, Sum, If, Implies, Solver, EnumSort, ModelRef
+from z3 import Context, Bool, Int, Const, ExprRef, And, Not, Sum, If, Implies, Solver, EnumSort, ModelRef, Distinct
 from my_solver import MySolver, CPU
 
 """
@@ -34,12 +34,57 @@ class ScheduleAlgo(Enum):
     RoundRobin = "round-robin"
 
 
+def count_max_distinct(vars: list[Int]) -> ExprRef:
+    """
+    Construct a Z3 expression representing the maximum number of mutually different values
+    among the given Z3 Int variables.
+
+    Args:
+        vars (List[IntRef]): A list of Z3 Int symbolic variables.
+
+    Returns:
+        ArithRef: An expression representing the number of distinct values.
+    """
+    n = len(vars)
+    # 单个元素一定是distinct
+    if n == 1:
+        return 1
+
+    distinct_flags = []
+    for i in range(n):
+        # vi is considered "distinct" if it's not equal to any previous vj (j < i)
+        if i > 0:
+            is_new = And(*[vars[i] != vars[j] for j in range(i)])
+            flag = If(is_new, 1, 0)  # First var is always new
+            distinct_flags.append(flag)
+        else:
+            distinct_flags.append(1)
+
+    return Sum(distinct_flags)
+
+
 class ReqElem:
     def __init__(self, name: str, ctx: Context, src_sort: EnumSort):
         self.isValid = Bool(name + '_val', ctx)
         self.source = Const(name + '_src', src_sort)
         self.reqLoc = Int(name + '_loc', ctx)
         self.startTime = Int(name + '_stime', ctx)
+
+    def print_model_value(self, model: ModelRef, show_loc=False) -> Tuple:
+        isVal = model.evaluate(self.isValid)
+        src = model.evaluate(self.source)
+        st = model.evaluate(self.startTime, model_completion=True)
+        loc = model.evaluate(self.reqLoc)
+
+        if model[self.isValid] is not None:
+            if isVal:
+                if show_loc:
+                    return src, st, loc
+                return src, st
+            else:
+                return 'Non'
+        else:
+            return 'Any'
 
     def get_eq_constraints(self, elem: 'ReqElem') -> ExprRef:
         return And(elem.isValid == self.isValid,
@@ -50,35 +95,24 @@ class ReqElem:
     def get_invalid_constraints(self) -> ExprRef:
         return Not(self.isValid)
 
-    def print_model_value(self, model: ModelRef, showLoc=False) -> Tuple:
-        isVal = model.evaluate(self.isValid)
-        src = model.evaluate(self.source)
-        st = model.evaluate(self.startTime, model_completion=True)
-        loc = model.evaluate(self.reqLoc)
-
-        if model[self.isValid] is not None:
-            if isVal:
-                if showLoc:
-                    return 'T', src, st, loc
-                return 'T', src, st
-            else:
-                if showLoc:
-                    return "F", '-', '-', '-'
-                return "F", '-', '-'
-        else:
-            if showLoc:
-                return '-', '-', '-', '-'
-            return '-', '-', '-'
-
 
 """
 SourceInput维护着每个时刻的输入数量，与之直连的队列的enqueue值由source决定
+Args:
+        solver (MySolver): The SMT solver instance used for adding/storing/solving constraints.
+        queue_name (str): A unique name for identifying this queue.
+        time_steps (int): The total number of time steps for which the queue is modeled.
+        queue_size (int): The length of the queue.
+        cached (bool, optional): Whether this queue has a cache. Defaults to False.
+        credit_based (bool, optional): Whether the queue follows a credit-based flow control mechanism. Defaults to False.
+        lossless (bool, optional): Whether the queue is lossless (i.e., never drops packets). Defaults to False.
+        src (str, optional): Optional source identifier or label for the queue. Defaults to None.
 """
 
 
 class HNQueue:
-    def __init__(self, solver: MySolver, queue_name: str, time_steps: int, queue_size: int, cached: bool = False,
-                 credit_based: bool = False, lossless: bool = False, src: str = None):
+    def __init__(self, solver: MySolver, queue_name: str, time_steps: int, queue_size: int,
+                 cached: bool = False, credit_based: bool = False, lossless: bool = False, src: str = None):
 
         ctx = solver.ctx
         self.solver = solver
@@ -94,7 +128,6 @@ class HNQueue:
         self.deq_cnt = []  # 各个时刻出队的数量
         self.val_cnt = []  # 各个时刻队列里valid的元素的数量
         self.cap_cnt = []  # 各个时刻队列的容量(即最多可以入队的数量)
-        # self.enq_cnt = []
         for t in range(self.time_steps):
             name = queue_name + '_deq_cnt_at_time_' + str(t)
             self.deq_cnt.append(Int(name, ctx))
@@ -102,8 +135,6 @@ class HNQueue:
             self.val_cnt.append(Int(name, ctx))
             name = queue_name + '_cap_cnt_at_time_' + str(t)
             self.cap_cnt.append(Int(name, ctx))
-            # name = queue_name + '_enq_cnt_at_time_' + str(t)
-            # self.enq_cnt.append(Int(name, ctx))
 
         # 初始化各个时刻的队列状态
         self.queue_states = {}
@@ -114,8 +145,11 @@ class HNQueue:
                 queue_state.append(ReqElem(name=name, ctx=ctx, src_sort=self.solver.ReqSource))
             self.queue_states[t] = queue_state
 
-        # 如果当前队列连接了cache，添加一个辅助队列用来保存cache hit状态
+        # 如果当前队列连接了cache，创建一个shadow queue作为tracking the cached state of this queue
+        # 然后添加一个辅助队列用来保存cache hit状态
         if self.cached:
+            self.shadow_queue = HNQueue(solver=solver, queue_name=queue_name + '_sd', time_steps=time_steps,
+                                        queue_size=queue_size)
             self.hit = {
                 t: [Bool(name=f'{queue_name}_hit_index_{i}_at_time_{t}', ctx=ctx) for i in range(queue_size)]
                 for t in range(self.time_steps)
@@ -169,6 +203,7 @@ class HNQueue:
         step 3: 除了remain和input的元素，剩余的valid置为false
     """
 
+    # TODO: 当前 queue 不仅是 credit-based flow control，还连接了cache
     def add_credit_flow_control_constraints(self, *dst_queues: HNQueue):
         assert self.credit_based
 
@@ -204,6 +239,7 @@ class HNQueue:
                                self.queue_states[t][i].get_invalid_constraints())
                 self.solver.add_expr(name, cons)
 
+
         # 添加其他时刻的credit值及其约束
         for t in range(self.time_steps - 1):
             credit_replenish_sum = Sum(*[q.get_replenishment(self.src, t) for q in dst_queues])
@@ -234,9 +270,17 @@ class HNQueue:
         self.solver.add_expr(f'cons_{self.queue_name}_deq_must_less_valid_cnt', And(*[self.val_cnt[t] >= self.deq_cnt[t]
                                                                                       for t in range(self.time_steps)
                                                                                       ]))
-        # t 时刻队列的容量(未入队时）等于: 队列长度 - (t-1时刻的valid元素的数量 - t-1时刻dequeue的数量)
-        self.solver.add_expr(f"cons_{self.queue_name}_cap_equation", And(*[self.cap_cnt[t] == self.queue_size - (self.val_cnt[t - 1] - self.deq_cnt[t - 1])
-                                                                           for t in range(1, self.time_steps)]))
+        name = f"cons_{self.queue_name}_cap_equation"
+        # t 时刻队列的容量(未入队时）的约束
+        if self.cached:
+            # raw queue和filtered queue的count值同步，否则对于raw queue向前连接的其他queues的调度会有问题
+            self.solver.add_expr(name, And(*[self.cap_cnt[t] == self.shadow_queue.cap_cnt[t]
+                                             for t in range(self.time_steps)]))
+        else:
+            # 未连接cache时：队列长度 - (t-1时刻的valid元素的数量 - t-1时刻dequeue的数量)
+            self.solver.add_expr(name,
+                                 And(*[self.cap_cnt[t] == self.queue_size - (self.val_cnt[t - 1] - self.deq_cnt[t - 1])
+                                       for t in range(1, self.time_steps)]))
         for t in range(self.time_steps):
             name = f"cons_{self.queue_name}_valid_cnt_at_time_{t}"
             cons = self.val_cnt[t] == Sum(*[If(self.queue_states[t][i].isValid, 1, 0) for i in range(self.queue_size)])
@@ -253,7 +297,8 @@ class HNQueue:
                 self.cap_cnt[0] == self.queue_size,
                 *[And(self.input_cnt[t] >= 0,
                       self.credit_cnt[t] >= 0,
-                      self.input_cnt[t] <= self.credit_cnt[t])
+                      self.input_cnt[t] <= self.credit_cnt[t],
+                      self.input_cnt[t] <= self.cap_cnt[t])
                   for t in range(self.time_steps)]
             )
             self.solver.add_expr(name, cons)
@@ -274,6 +319,10 @@ class HNQueue:
                 self.solver.add_expr(name, And(common_cons, And(*[Not(cache_hit[i]) for i in range(self.queue_size)])))
             else:
                 self.solver.add_expr(name, common_cons)
+
+        # shadow队列也初始化
+        if self.cached:
+            self.shadow_queue.add_self_common_constraints()
 
     # 末端队列的出队约束
     # 手动：指定max or min dequeue number # TODO:待实现
@@ -327,13 +376,45 @@ class HNQueue:
         }
         return q_states
 
+    # 获取当前时刻deq的元素中，distinct元素的个数(deq_distinct_cnt)，deq值不确定
+    def get_distinct_deq_cnt_constraints(self, deq_distinct_cnt: Int, t: int, deq_cnt_var: int) -> ExprRef:
+        loc_list = [self.queue_states[t][i].reqLoc for i in range(self.queue_size)]
+        if deq_cnt_var == 0:
+            return deq_distinct_cnt == 0
+        return If(self.deq_cnt[t] == deq_cnt_var,
+                  deq_distinct_cnt == count_max_distinct(loc_list[:deq_cnt_var]),
+                  self.get_distinct_deq_cnt_constraints(deq_distinct_cnt, t, deq_cnt_var - 1))
+
+    """以下是performance analysis的时候可以设置的性能条件，可以是pre condition，也可以是post condition"""
+
     # 测试的时候才调用
     def set_init_state_test(self):
         src = self.src if self.src is not None else self.solver.get_source_const(CPU)
         cons = And(
             self.cap_cnt[0] == self.queue_size,
             *[And(self.queue_states[0][i].isValid,
-                self.queue_states[0][i].startTime == i,
-                self.queue_states[0][i].source == src) for i in range(self.queue_size)
-            ])
+                  self.queue_states[0][i].startTime == i,
+                  self.queue_states[0][i].source == src) for i in range(self.queue_size)
+              ])
         self.solver.add_expr(f'test_init_state_for_{self.queue_name}', cons)
+
+    # 针对source节点设置：所有时刻发送的所有请求的地址都不相同(测试cache的替换)
+    def set_input_req_loc_distinct_constraints(self):
+        if self.src is not None:
+            loc_list = []
+            for t in range(self.time_steps):
+                loc_list = loc_list + [self.queue_states[t][i].reqLoc for i in range(self.queue_size)]
+            self.solver.add_expr(f'set_all_req_loc_distinct_for_{self.queue_name}', Distinct(*loc_list))
+
+    # 针对source节点设置：每个时刻输入值最大化
+    def set_max_input_constraints(self):
+        if self.src is not None:
+            cons = And(
+                *[If(self.credit_cnt[t] < self.cap_cnt[t],
+                     self.input_cnt[t] == self.credit_cnt[t],
+                     self.input_cnt[t] == self.cap_cnt[t]) for t in range(self.time_steps)]
+            )
+            cons = And(
+                *[self.input_cnt[t] == 1 for t in range(self.time_steps)]
+            )
+            self.solver.add_expr(f'set_input_eq_credit_for_{self.queue_name}', cons)
