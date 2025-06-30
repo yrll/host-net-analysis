@@ -9,8 +9,7 @@ from z3 import *
 
 from my_solver import MySolver
 from queue_model import ReqElem, HNQueue
-from util import concat_name
-from util import make_counter
+from util import concat_name, concat_tuple_or_str
 
 
 class CacheElem:
@@ -128,14 +127,14 @@ class HNCache:
                 name = f'cons_{self.cache_name}_replace_index_{i}_at_time_{t}'
                 cache_i_eq_any_deq_elem = Or(*[If(j < deq_cnt,
                                                   And(cache_state_t_plus_1[i].loc == queue_state[j].reqLoc,
-                                                      cache_state_t_plus_1[i].lastAcc == t,
-                                                      cache_state_t_plus_1[i].isValid),
+                                                      cache_state_t_plus_1[i].lastAcc == t + 1,
+                                                      cache_state_t_plus_1[i].isValid,),
                                                   False)
                                                for j in range(queue.queue_size)])
                 cons = If(replace_state[i],
                           cache_i_eq_any_deq_elem,
                           And(cache_state_t_plus_1[i].isValid == cache_state[i].isValid,
-                              cache_state_t_plus_1[i].lastAcc == cache_state[i].lastAcc + 1,
+                              cache_state_t_plus_1[i].lastAcc == cache_state[i].lastAcc,
                               cache_state_t_plus_1[i].loc == cache_state[i].loc))
                 self.solver.add_expr(name, cons)
             # 所有被替换的cache elem1，以及所有没替换的cache elem2，都存在lru(elem1, elem2)
@@ -147,9 +146,9 @@ class HNCache:
                                           Not(lru_compare(cache_state[i], cache_state[j])))
                     exclude_cons = Implies(And(replace_state[i], replace_state[j]),
                                            cache_state_t_plus_1[i].loc != cache_state_t_plus_1[j].loc)
-                    self.solver.add_expr(f"cons_{self.cache_name}_prefer_*{make_counter()}", prefer_cons)
+                    self.solver.add_expr(f"cons_{self.cache_name}_prefer", prefer_cons)
                     if exclusive_replace:
-                        self.solver.add_expr(f"cons_{self.cache_name}_distinct_*{make_counter()}", exclude_cons)
+                        self.solver.add_expr(f"cons_{self.cache_name}_distinct", exclude_cons)
 
 
     """
@@ -164,9 +163,8 @@ class HNCache:
     def add_cache_filter_constraints(self, raw_queue: HNQueue):
         assert hasattr(raw_queue, 'hit') and hasattr(raw_queue, 'shadow_queue')
         filtered_queue = raw_queue.shadow_queue
-        # shadow queue每次全部元素出队
-        name = f'cons_{raw_queue.queue_name}_shadow_deq_self'
-        filtered_queue.add_self_dequeue_constraints()
+        # raw queue每次全部元素出队
+        raw_queue.add_self_dequeue_constraints()
         # 设置filtered queue的状态
         for t in range(self.time_steps):
             # 设置raw queue的每个元素的cache hit状态
@@ -179,15 +177,20 @@ class HNCache:
                 # 当前队列元素valid再判断cache hit: cache hit的标志是当前元素的loc和任一cache元素的loc一样
                 cons = raw_queue_hit_state[i] == If(
                     raw_queue_state[i].isValid,
-                    If(Or(*[And(cache_state[j].loc == raw_queue_state[i].reqLoc, cache_state[j].isValid)
-                            for j in range(self.cache_size)]),
-                       True,
-                       False),
+                    If(
+                        Or(
+                            *[And(cache_state[j].loc == raw_queue_state[i].reqLoc, cache_state[j].isValid)
+                              for j in range(self.cache_size)]
+                        ),
+                        True,
+                        False),
                     False
                 )
                 self.solver.add_expr(name, cons)
 
             filtered_remain = filtered_queue.queue_size - filtered_queue.cap_cnt[t]
+            filtered_enq = raw_queue.val_cnt[t] - raw_queue.get_hit_cnt(t)
+            filtered_queue_state = filtered_queue.queue_states[t]
             # 为【t】时刻 filtered_queue 的index为i 的元素赋值
             for i in range(filtered_queue.queue_size):
                 # step 1: 平移deq数量的元素
@@ -197,30 +200,30 @@ class HNCache:
                             name = f"cons_for_{filtered_queue.queue_name}_deq_{deq_var}_index_{i}_at_time_{t}"
                             cons = Implies(
                                 And(i < filtered_remain, deq_var == filtered_queue.deq_cnt[t - 1]),
-                                filtered_queue.queue_states[t][i].get_eq_constraints(
+                                filtered_queue_state[i].get_eq_constraints(
                                     filtered_queue.queue_states[t - 1][i + deq_var])
                             )
                             self.solver.add_expr(name, cons)
-
-                valid_num = filtered_remain + raw_queue.queue_size - raw_queue.get_hit_cnt(t)
-                # 用raw queue中未命中cache的元素填补filtered queue
-                for k in range(raw_queue.queue_size):  # k是raw queue里元素的index
-                    # 同一元素在filtered queue里的相对index j一定不大于在raw queue里的index:
-                    # 因为raw queue的元素进入filtered queue时不能有bubble, 且最多等比进入
-                    if i > k:
-                        continue
-                    cons = Implies(
-                        Sum(*raw_queue_hit_state[:k + 1]) == k - (i - filtered_remain),
-                        filtered_queue.queue_states[t][i].get_eq_constraints(raw_queue_state[k])
-                    )
-                    cons = Implies(And(filtered_remain <= i, i < valid_num), cons)
-                    name = f'cons_{filtered_queue.queue_name}_non_hit_index_{i}_raw_{k}_at_time_{t}'
-                    self.solver.add_expr(name, cons)
+                # step 2: 用raw queue中未命中cache的元素填补filtered queue
+                filtered_enq_index = i - filtered_remain  # filtered queue里除去剩余元素后的起始index
+                for filtered_enq_index_var in range(filtered_queue.queue_size):
+                    for k in range(raw_queue.queue_size):  # k是raw queue里元素的index
+                        # 同一元素的filtered_enq_index一定不大于在raw queue里的index(避免bubble)
+                        if k < filtered_enq_index_var:
+                            continue
+                        index_cons = And(filtered_remain <= i,
+                                         i < filtered_remain + filtered_enq,
+                                         filtered_enq_index == filtered_enq_index_var)
+                        hit_cnt_cons = Sum(*raw_queue_hit_state[:k + 1]) == k - filtered_enq_index
+                        cons = Implies(And(index_cons, hit_cnt_cons),
+                                       filtered_queue_state[i].get_eq_constraints(raw_queue_state[k]))
+                        name = f'cons_{filtered_queue.queue_name}_non_hit_index_{i}_raw_{k}_at_time_{t}'
+                        self.solver.add_expr(name, cons)
 
                 # 剩余元素设置valid为false
                 # For filtered_remain + raw_non_hit_cnt < i < queue_size
-                cond = And(valid_num < i)
-                asgn = filtered_queue.queue_states[t][i].get_invalid_constraints()
+                cond = And(filtered_remain + filtered_enq <= i)
+                asgn = filtered_queue_state[i].get_invalid_constraints()
                 name = f'cons_{filtered_queue.queue_name}_invalid_index_{i}_at_time_{t}'
                 cons = Implies(cond, asgn)
                 self.solver.add_expr(name, cons)
@@ -235,14 +238,7 @@ class HNCache:
                 elem_state = self.cache_states[t][i].print_model_value(self.solver.model, show_details)
                 replace_state = self.solver.evaluate(self.replace_states[t][i])
                 # 简化True/False
-                if replace_state:
-                    replace_state = 'T'
-                elif not replace_state:
-                    replace_state = 'F'
-                if isinstance(elem_state, tuple):
-                    s.append(elem_state + (replace_state,))
-                else:
-                    s.append((elem_state, replace_state))
+                s.append(concat_tuple_or_str(elem_state, replace_state))
             c_states[t] = s
         return c_states
 
@@ -254,6 +250,17 @@ class HNCache:
             for t in range(self.time_steps)
         }
         return c_states
+
+    def set_cache_replace_cnt_constraints(self, max_rep_cnt):
+        cons = Sum(
+            *[
+                Sum(*[
+                    self.replace_states[t][i] for i in range(self.cache_size)
+                ])
+                for t in range(self.time_steps)
+            ]
+        ) >= max_rep_cnt
+        self.solver.add_expr(f'set_cache_replace_cnt_for_{self.cache_name}', cons)
 
 """
 celem1会被替换: return false

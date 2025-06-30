@@ -1,0 +1,4 @@
+.idea
+**/smt.smt2
+**/smt_model
+**/output.smt

@@ -3,13 +3,24 @@ import json
 from tabulate import tabulate
 from z3 import Context, Solver, EnumSort, ExprRef, Bool, sat, ModelRef
 
-from util import make_counter
-
 # 以下是合法的source起点
 CPU = 'cpu'
 IIO = 'iio'
 
 
+# 以下是保存smt相关文件的路径
+smt2_filepath = "smt.smt2"
+smt_model_filepath = "smt_model"
+unsat_core_filepath = "unsat.smt2"
+
+
+_count = 0
+
+
+def make_counter():
+    global _count
+    _count += 1
+    return _count
 
 
 """
@@ -48,14 +59,14 @@ class MySolver:
         if self.solver.check() == sat:
             self.model = self.solver.model()
             print('SAT')
-            self.save_model('smt_model')
+            self.save_model(smt_model_filepath)
         else:
             print('UNSAT')
             self.prinf_unsat_core(print_cons)
 
-        self.save_smt2('smt.smt2')
+        self.save_smt2(smt2_filepath)
 
-    def save_model(self, filename, only_cnt: bool = True):
+    def save_model(self, filename, only_cnt: bool = False):
         model_dict = {}
         for d in self.model.decls():
             var_name = d.name()
@@ -73,16 +84,27 @@ class MySolver:
             f.write(self.solver.to_smt2())
 
     def prinf_unsat_core(self, show_detail=False):
+        unsat_cons = {}
         for name in self.solver.unsat_core():
             cons = self.constraint_map.get(str(name), None)
             if cons is not None:
                 # print(f"{name} → {cons}")
+                unsat_cons[str(name)] = cons
                 if show_detail:
                     print(f"{name} -> {cons}")
                 else:
                     print(name)
+
             else:
                 print(f"{name} → <no mapping found>")
+
+        with open(unsat_core_filepath, "w") as f:
+            for name, cons in unsat_cons.items():
+                name = str(name)
+                if "range" in name or "equation" in name:
+                    f.write(f"{name} -> \n")
+                else:
+                    f.write(f"{name} -> \n {cons}\n")
 
     # 获取一个值在model的取值
     def evaluate(self, v: ExprRef):
@@ -91,3 +113,5 @@ class MySolver:
             return self.model.evaluate(v)
         else:
             return 'Any'
+
+

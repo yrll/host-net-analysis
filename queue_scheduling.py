@@ -4,7 +4,6 @@ from z3 import *
 
 from my_solver import MySolver
 from queue_model import HNQueue
-from util import make_counter
 
 
 def z3_min(x, y):
@@ -39,14 +38,13 @@ def add_fifo_constraints(q1: HNQueue, q2: HNQueue, solver: MySolver):
         q1_deq_t_1 = q1.deq_cnt[t - 1]
         q1_cap = q1.cap_cnt[t]
         q2_val_t_1 = q2.val_cnt[t - 1]
-        q1_remain = q1.queue_size - q1_cap
-        # 由当前函数决定的变量：设置q2的dequeue值的约束
+        q1_remain = q1.get_remain_cnt(t)
         q2_deq_t_1 = q2.deq_cnt[t - 1]
-        cond = q1_cap - q2_val_t_1 < 0
-        true_asgn = q2_deq_t_1 == q1_cap
-        false_asgn = q2_deq_t_1 == q2_val_t_1
-        name = f'cons_fifo_add_dequeue_for_{q1.queue_name}_at_time_{t}'
-        cons = If(cond, true_asgn, false_asgn)
+        # 由当前函数决定的变量：设置q2的dequeue值的约束
+        name = f'cons_fifo_add_dequeue_for_{q2.queue_name}_at_time_{t}'
+        cons = If(q1_cap - q2_val_t_1 < 0,
+                  q2_deq_t_1 == q1_cap,
+                  q2_deq_t_1 == q2_val_t_1)
         solver.add_expr(name, cons)
         # 由当前函数决定的变量：使用条件语句设置q1中每一个元素的值
         for nonzero_idx_i in range(1, q1.queue_size + 1):
@@ -75,7 +73,7 @@ def add_fifo_constraints(q1: HNQueue, q2: HNQueue, solver: MySolver):
             # For q1_remain_cnt(t) + q2_deq_cnt(t) < i < m: q1(t)[i].isValid == false
             cond = And(q1_remain + q2_deq_t_1 < nonzero_idx_i, nonzero_idx_i <= q1.queue_size)
             asgn = q1.queue_states[t][nonzero_idx_i - 1].get_invalid_constraints()
-            name = f'cons_fifo_condition3_for_{q1.queue_name}_index_{nonzero_idx_i}_at_time_{t}'
+            name = f'cons_fifo_condition3_for_{q1.queue_name}_index_{nonzero_idx_i-1}_at_time_{t}'
             cons = Implies(cond, asgn)
             solver.add_expr(name, cons)
 
@@ -111,18 +109,15 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
         cons3_ite_q2_val_less = If(q2_val_t_1 <= q1_cap / 2,
                                    And(q2_deq_t_1 == q2_val_t_1, q3_deq_t_1 == q1_cap - q2_deq_t_1),
                                    cons2_ite_q3_val_less)
-        name4 = f'cons_ite_{q2.queue_name}_plus_{q3.queue_name}_le_{q1.queue_name}_at_time_{t}'
+        name4 = f'cons_assign_deq_cnt_for_{q2.queue_name}_and_{q3.queue_name}_at_time_{t}'
         cons4_ite_q2_plus_q3_le_q1_cap = If(q2_val_t_1 + q3_val_t_1 <= q1_cap,
                                             And(q2_deq_t_1 == q2_val_t_1, q3_deq_t_1 == q3_val_t_1),
                                             cons3_ite_q2_val_less)
-        solver.add_expr(name1, cons1_ite_cap_not_even)
-        solver.add_expr(name2, cons2_ite_q3_val_less)
-        solver.add_expr(name3, cons3_ite_q2_val_less)
         solver.add_expr(name4, cons4_ite_q2_plus_q3_le_q1_cap)
 
         # 使用条件语句设置q1中每一个元素的值，condition语句(cond)里都是用非零index做比较，assignment语句(asgn)里将index值统一减一
         q1_deq_t_1 = q1.deq_cnt[t - 1]
-        q1_remain = q1.queue_size - q1_cap
+        q1_remain = q1.get_remain_cnt(t)
         for idx_i in range(q1.queue_size):
             # 针对q1不同的dequeue值枚举
             for k in range(q1.queue_size + 1):  # k是q1可能dequeue的数量
@@ -137,6 +132,8 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
             # 针对q1不同的remain值枚举
             for q1_remain_var in range(q1.queue_size + 1):
                 j = idx_i - q1_remain_var  # q1_cap_var
+                if j < 0:  # j是q1除去剩余元素后的起始index
+                    continue
                 for q2_deq_var in range(q2.queue_size + 1):
                     for q3_deq_var in range(q3.queue_size + 1):
                         # For q1_remain_cnt(t) < i <= q1_remain_cnt(t) + q2_deq_cnt(t-1) + q3_deq_cnt(t-1):
@@ -147,7 +144,8 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                          q2_deq_var == q2_deq_t_1,
                                          q3_deq_var == q3_deq_t_1)
                         # this if condition is from the following constraints' index, I don't know why actually
-                        if j <= 2 * min(q2_deq_var, q3_deq_var):
+                        if j < 2 * min(q2_deq_var, q3_deq_var):
+                            # 此时q1的元素等于q2和q3轮流赋值
                             name2 = f'cons_ite_{q1.queue_name}_idx_{idx_i}_q1remain_{q1_remain_var}_q2deq_{q2_deq_var}_q3deq_{q3_deq_var}_not_even_at_time_{t}'
                             cons2_ite_q1_cap_not_even = If(j % 2 == 1,
                                                            q1.queue_states[t][idx_i].get_eq_constraints(
@@ -157,11 +155,12 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                                                q2.queue_states[t - 1][j // 2]
                                                            )
                                                            )
-                            cons = Implies(And(commenCond, idx_i - q1_remain <= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
+                            cons = Implies(And(commenCond, idx_i >= q1_remain, j < 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
                                            cons2_ite_q1_cap_not_even)
                             solver.add_expr(name2, cons)
-                        elif 0 <= j - q2_deq_var < q3.queue_size and 0 <= j - q3_deq_var < q2.queue_size:
-                            name1 = f'cons_ite_{q2.queue_name}_deq_less_{q3.queue_name}_deq_at_time_{t}_*{make_counter()}'
+                        elif j < q2_deq_var + q3_deq_var:
+                            # 此时q1的元素要么是q2要么是q3中的
+                            name1 = f'cons_ite_{q2.queue_name}_deq_less_{q3.queue_name}_deq_at_time_{t}'
                             cons1_ite_q2_deq_less_q3_deq = If(q2_deq_t_1 < q3_deq_t_1,
                                                               q1.queue_states[t][idx_i].get_eq_constraints(
                                                                   q3.queue_states[t - 1][j - q2_deq_var]
@@ -170,25 +169,14 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                                                   q2.queue_states[t - 1][j - q3_deq_var]
                                                               )
                                                               )
-                            cons = Implies(And(commenCond, idx_i - q1_remain > 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
+                            cons = Implies(And(commenCond, j >= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
                                            cons1_ite_q2_deq_less_q3_deq)
                             solver.add_expr(name1, cons)
-                        # name3 = f'cons_ite_within_in_turn_at_time_{t}_*{make_counter()}'
-                        # cons3_ite_within_in_turn = If(j <= 2 * min(q2_deq_var, q3_deq_var),
-                        #                         cons2_ite_q1_cap_not_even,
-                        #                         cons1_ite_q2_deq_less_q3_deq)
-                        # name4 = f'cons_in_the_all_at_time_{t}_*{make_counter()}'
-                        # cons4_in_the_all = Implies(commenCond, cons3_ite_within_in_turn)
-                        # add constraints to exprs
-                        # !!!注意，不能每个都加进去，每个都加进去表示每个语句都要为True
-                        # solver.add_expr(name1, cons1_ite_q2_deq_less_q3_deq)
-                        # solver.add_expr(name2, cons2_ite_q1_cap_not_even)
-                        # solver.add_expr(name3, cons3_ite_within_in_turn)
-                        # solver.add_expr(name4, cons4_in_the_all)
 
             # For q1_remain_cnt(t) + q2_deq_cnt(t) < i < m: q1(t)[i].isValid == false
-            cond = And(idx_i > q1_remain + q2_deq_t_1 + q3_deq_t_1, idx_i <= q1.queue_size)
+            cond = And(idx_i >= q1_remain + q2_deq_t_1 + q3_deq_t_1)
             asgn = q1.queue_states[t][idx_i].get_invalid_constraints()
             name = f'cons_rr_condition3_for_index_{idx_i}_at_time_{t}'
             cons = Implies(cond, asgn)
             solver.add_expr(name, cons)
+

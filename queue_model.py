@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from z3 import Context, Bool, Int, Const, ExprRef, And, Not, Sum, If, Implies, Solver, EnumSort, ModelRef, Distinct
 from my_solver import MySolver, CPU
+from util import concat_tuple_or_str
 
 """
 Queue in the host network (HNQueue): 
@@ -82,7 +83,7 @@ class ReqElem:
                     return src, st, loc
                 return src, st
             else:
-                return 'Non'
+                return 'NoValid'
         else:
             return 'Any'
 
@@ -124,6 +125,9 @@ class HNQueue:
         self.time_steps = time_steps
         self.queue_size = queue_size
 
+        self.lossless = lossless  # 是否允许丢包
+        self.credit_based = credit_based
+
         # 非固定属性 (其值依赖于其他变量, 即相连的队列&调度算法, 或者cache)
         self.deq_cnt = []  # 各个时刻出队的数量
         self.val_cnt = []  # 各个时刻队列里valid的元素的数量
@@ -155,14 +159,12 @@ class HNQueue:
                 for t in range(self.time_steps)
             }
 
-        # 对于credit based flow control的额外设置
-        if credit_based:  # credit-based flow control的队列必然有source
-            assert self.src is not None
-        self.lossless = lossless  # 是否允许丢包
-        self.credit_based = credit_based
-        if credit_based:  # credit-based control等于无损传输
+        # 对于credit based flow control的额外设置 # credit-based control等于无损传输
+        if credit_based:
             # 当前时刻的credit数量，当前时刻最多入队的数量小于等于当前时刻的credit
             self.credit_cnt = [Int(name=f'{src}_credit_cnt_at_time_{t}', ctx=ctx) for t in range(self.time_steps)]
+
+        if self.src is not None:
             # 每个时刻的请求输入总数（可以是 Int 变量，支持约束建模）
             self.input_cnt = [Int(name=f"{src}_input_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
 
@@ -173,11 +175,18 @@ class HNQueue:
     def get_deq_at_time_t(self, time_step: int) -> Int:
         return self.deq_cnt[time_step]
 
+    # 获取当前remain值，有cache和无cache的队列，remian值不同
+    def get_remain_cnt(self, t):
+        if self.cached:
+            return 0
+        else:
+            return self.queue_size - self.cap_cnt[t]
+
     # 这里的capacity指的是t时刻其他元素入队前的容量
     # t 时刻队列的容量等于:队列长度 - (t-1时刻的valid元素的数量 - t-1时刻dequeue的数量)
-    def get_capacity_at_time(self, t) -> ExprRef:
-        assert t > 0
-        return self.queue_size - self.val_cnt[t - 1] + self.deq_cnt[t - 1]
+    # def get_capacity_at_time(self, t) -> ExprRef:
+    #     assert t > 0
+    #     return self.queue_size - self.val_cnt[t - 1] + self.deq_cnt[t - 1]
 
     # 获得t时刻【即将】出队/cache命中的元素里，来自于src的数量
     # 这里要区分参数里的cache队列和非cache队列，能否补充credict: cache队列看hit的元素，非cache队列看deq的元素
@@ -204,11 +213,18 @@ class HNQueue:
     """
 
     # TODO: 当前 queue 不仅是 credit-based flow control，还连接了cache
-    def add_credit_flow_control_constraints(self, *dst_queues: HNQueue):
+    def add_credit_flow_control_constraints(self, dst_queues: [HNQueue], time_length):
         assert self.credit_based
 
+        # 添加各个时刻的credit值及其约束
+        for t in range(self.time_steps - 1):
+            credit_replenish_sum = Sum(*[q.get_replenishment(self.src, t) for q in dst_queues])
+            name = f'cons_{self.src}_credit_upt_at_time_{t}'
+            cons = self.credit_cnt[t + 1] == self.credit_cnt[t] - self.input_cnt[t] + credit_replenish_sum
+            self.solver.add_expr(name, cons)
+
         for t in range(self.time_steps):
-            remain = self.queue_size - self.cap_cnt[t]
+            remain = self.get_remain_cnt(t)
             for i in range(self.queue_size):
                 # step 1: 平移deq数量的元素
                 if t > 0:
@@ -228,24 +244,16 @@ class HNQueue:
                     And(remain <= i, i < remain + self.input_cnt[t]),
                     And(self.queue_states[t][i].isValid,
                         self.queue_states[t][i].source == self.src,
-                        self.queue_states[t][i].startTime == t * self.queue_size + i
+                        self.queue_states[t][i].startTime == t * time_length + i
                         )
                 )
                 self.solver.add_expr(name, cons)
 
                 # step 3: 剩余元素
                 name = f"cons_for_{self.queue_name}_flow_control_3_index_{i}_at_time_{t}"
-                cons = Implies(And(remain + self.input_cnt[t] <= i, i < self.queue_size),
+                cons = Implies(remain + self.input_cnt[t] <= i,
                                self.queue_states[t][i].get_invalid_constraints())
                 self.solver.add_expr(name, cons)
-
-
-        # 添加其他时刻的credit值及其约束
-        for t in range(self.time_steps - 1):
-            credit_replenish_sum = Sum(*[q.get_replenishment(self.src, t) for q in dst_queues])
-            name = f'cons_{self.src}_credit_upt_at_time_{t}'
-            cons = self.credit_cnt[t + 1] == self.credit_cnt[t] - self.input_cnt[t] + credit_replenish_sum
-            self.solver.add_expr(name, cons)
 
     """
     添加当前队列自身变量间的固定约束:
@@ -270,8 +278,12 @@ class HNQueue:
         self.solver.add_expr(f'cons_{self.queue_name}_deq_must_less_valid_cnt', And(*[self.val_cnt[t] >= self.deq_cnt[t]
                                                                                       for t in range(self.time_steps)
                                                                                       ]))
-        name = f"cons_{self.queue_name}_cap_equation"
+        for t in range(self.time_steps):
+            cons = self.val_cnt[t] == Sum(*[If(self.queue_states[t][i].isValid, 1, 0) for i in range(self.queue_size)])
+            self.solver.add_expr(f"cons_{self.queue_name}_valid_cnt_equation_at_time{t}", cons)
+
         # t 时刻队列的容量(未入队时）的约束
+        name = f"cons_{self.queue_name}_cap_cnt_equation"
         if self.cached:
             # raw queue和filtered queue的count值同步，否则对于raw queue向前连接的其他queues的调度会有问题
             self.solver.add_expr(name, And(*[self.cap_cnt[t] == self.shadow_queue.cap_cnt[t]
@@ -281,48 +293,43 @@ class HNQueue:
             self.solver.add_expr(name,
                                  And(*[self.cap_cnt[t] == self.queue_size - (self.val_cnt[t - 1] - self.deq_cnt[t - 1])
                                        for t in range(1, self.time_steps)]))
-        for t in range(self.time_steps):
-            name = f"cons_{self.queue_name}_valid_cnt_at_time_{t}"
-            cons = self.val_cnt[t] == Sum(*[If(self.queue_states[t][i].isValid, 1, 0) for i in range(self.queue_size)])
-            self.solver.add_expr(name, cons)
 
-        # 对于队列元素状态的初始化约束
-        # credit based flow control 的节点设置credit和input值约束
-        if self.credit_based:
-            assert self.src is not None
-            # 初始化时刻0的credit和deq值，以及input值的range
-            name = f'cons_init_source_{self.src}'
-            cons = And(
-                self.credit_cnt[0] == self.queue_size,
-                self.cap_cnt[0] == self.queue_size,
-                *[And(self.input_cnt[t] >= 0,
-                      self.credit_cnt[t] >= 0,
-                      self.input_cnt[t] <= self.credit_cnt[t],
-                      self.input_cnt[t] <= self.cap_cnt[t])
-                  for t in range(self.time_steps)]
-            )
-            self.solver.add_expr(name, cons)
-
-        # 非起点设置初始空状态
+        # 队列元素状态的初始化约束
         if self.src is None:
-            # 非src队列初始状态都为全空
+            # # 对于非起点设置初始空状态，初始状态都为全空
             init_queue_state = self.queue_states[0]
-            name = f'cons_init_non_source_queue_{self.queue_name}'
-            common_cons = And(
+            name = f'cons_init_non_source_{self.queue_name}'
+            cons = And(
                 self.deq_cnt[0] == 0,
                 self.val_cnt[0] == 0,
                 self.cap_cnt[0] == self.queue_size,
                 *[Not(init_queue_state[i].isValid) for i in range(self.queue_size)]
             )
-            if self.cached:
-                cache_hit = self.hit[0]
-                self.solver.add_expr(name, And(common_cons, And(*[Not(cache_hit[i]) for i in range(self.queue_size)])))
+            self.solver.add_expr(name, cons)
+        else:
+            # 对于起点仅设置输入值的约束
+            name = f'cons_init_source_{self.src}'
+            common_cons = And(self.cap_cnt[0] == self.queue_size,
+                              *[And(self.input_cnt[t] >= 0, self.input_cnt[t] <= self.cap_cnt[t]) for t in
+                                range(self.time_steps)])
+            if self.credit_based:
+                # credit based flow control 的节点设置credit和input值约束初始化时刻0的credit和deq值，以及input值的range
+                cons = And(
+                    common_cons,
+                    self.credit_cnt[0] == self.queue_size,
+                    *[And(self.input_cnt[t] >= 0,
+                          self.input_cnt[t] <= self.credit_cnt[t])
+                      for t in range(self.time_steps)]
+                )
+                self.solver.add_expr(name, cons)
             else:
                 self.solver.add_expr(name, common_cons)
 
-        # shadow队列也初始化
+        # 连接cache的节点初始化
         if self.cached:
             self.shadow_queue.add_self_common_constraints()
+            cache_hit = self.hit[0]
+            self.solver.add_expr(name, And(*[Not(cache_hit[i]) for i in range(self.queue_size)]))
 
     # 末端队列的出队约束
     # 手动：指定max or min dequeue number # TODO:待实现
@@ -331,7 +338,7 @@ class HNQueue:
     def add_self_dequeue_constraints(self, fixed_deq=0):
         for t in range(self.time_steps):
             if fixed_deq > 0:
-                cons = If(self.val_cnt[t] > 0, self.deq_cnt[t] == 1, self.deq_cnt[0] == 0)
+                cons = If(self.val_cnt[t] > fixed_deq, self.deq_cnt[t] == fixed_deq, self.deq_cnt[t] == self.val_cnt[t])
             else:
                 # 没指定deq值，每次全部deq
                 cons = self.deq_cnt[t] == self.val_cnt[t]
@@ -370,10 +377,21 @@ class HNQueue:
 
     def print_queue_state(self, showLoc=False) -> {}:
         assert self.solver.model
-        q_states = {
-            t: [self.queue_states[t][i].print_model_value(self.solver.model, showLoc) for i in range(self.queue_size)]
-            for t in range(self.time_steps)
-        }
+        if self.cached:
+            # 有cache需要打印hit状态
+            q_states = {}
+            for t in range(self.time_steps):
+                state = []
+                for i in range(self.queue_size):
+                    s = self.queue_states[t][i].print_model_value(self.solver.model, showLoc)
+                    hit_s = self.solver.evaluate(self.hit[t][i])
+                    state.append(concat_tuple_or_str(s, hit_s))
+                q_states[t] = state
+        else:
+            q_states = {
+                t: [self.queue_states[t][i].print_model_value(self.solver.model, showLoc) for i in range(self.queue_size)]
+                for t in range(self.time_steps)
+            }
         return q_states
 
     # 获取当前时刻deq的元素中，distinct元素的个数(deq_distinct_cnt)，deq值不确定
@@ -398,7 +416,7 @@ class HNQueue:
               ])
         self.solver.add_expr(f'test_init_state_for_{self.queue_name}', cons)
 
-    # 针对source节点设置：所有时刻发送的所有请求的地址都不相同(测试cache的替换)
+    # 针对source节点设置：每个时刻发送的所有请求的地址都不相同(测试cache的替换),
     def set_input_req_loc_distinct_constraints(self):
         if self.src is not None:
             loc_list = []
@@ -409,12 +427,16 @@ class HNQueue:
     # 针对source节点设置：每个时刻输入值最大化
     def set_max_input_constraints(self):
         if self.src is not None:
-            cons = And(
-                *[If(self.credit_cnt[t] < self.cap_cnt[t],
-                     self.input_cnt[t] == self.credit_cnt[t],
-                     self.input_cnt[t] == self.cap_cnt[t]) for t in range(self.time_steps)]
-            )
-            cons = And(
-                *[self.input_cnt[t] == 1 for t in range(self.time_steps)]
-            )
-            self.solver.add_expr(f'set_input_eq_credit_for_{self.queue_name}', cons)
+            if self.credit_based:
+                cons = And(
+                    *[If(self.credit_cnt[t] < self.cap_cnt[t],
+                         self.input_cnt[t] == self.credit_cnt[t],
+                         self.input_cnt[t] == self.cap_cnt[t]) for t in range(self.time_steps)]
+                )
+            else:
+                cons = And(
+                    *[self.input_cnt[t] == self.cap_cnt[t] for t in range(self.time_steps)]
+                )
+            self.solver.add_expr(f'set_max_input_for_{self.queue_name}', cons)
+
+
