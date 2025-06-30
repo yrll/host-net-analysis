@@ -1,4 +1,9 @@
 .idea
+
+ __pycache__
+
+
 **/smt.smt2
 **/smt_model
 **/output.smt
+**/unsat.smt2

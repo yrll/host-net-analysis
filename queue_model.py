@@ -115,6 +115,7 @@ class HNQueue:
     def __init__(self, solver: MySolver, queue_name: str, time_steps: int, queue_size: int,
                  cached: bool = False, credit_based: bool = False, lossless: bool = False, src: str = None):
 
+        self.time_length = None
         ctx = solver.ctx
         self.solver = solver
         self.src = self.solver.get_source_const(src)
@@ -164,9 +165,23 @@ class HNQueue:
             # 当前时刻的credit数量，当前时刻最多入队的数量小于等于当前时刻的credit
             self.credit_cnt = [Int(name=f'{src}_credit_cnt_at_time_{t}', ctx=ctx) for t in range(self.time_steps)]
 
+
         if self.src is not None:
             # 每个时刻的请求输入总数（可以是 Int 变量，支持约束建模）
             self.input_cnt = [Int(name=f"{src}_input_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
+            # 每个时刻完成的请求总数
+            self.processed_cnt = [Int(name=f"{src}_processed_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
+            # 每个时刻完成的请求的平均时延
+            self.latency_avg_list = [Int(name=f"{src}_avg_latency_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
+
+    def get_latency_avg(self):
+        return Sum(*[self.latency_avg_list[t] for t in range(self.time_steps)]) / self.get_processed_sum()
+
+    def get_processed_sum(self):
+        return Sum(*[self.processed_cnt[t] for t in range(self.time_steps)])
+
+    def set_time_length(self, l):
+        self.time_length = l
 
     def get_hit_cnt(self, t) -> ExprRef:
         assert self.cached
@@ -202,6 +217,26 @@ class HNQueue:
                 range(self.queue_size)
             ])
 
+    # 获取t时刻完成的src节点发出的请求的平均延迟
+    def __get_replenishment_latency_sum(self, src: Const, t: int) -> ExprRef:
+        latency_list = []
+
+        if self.cached:
+            for i in range(self.queue_size):
+                latency_list.append(
+                    If(And(self.hit[t][i], self.queue_states[t][i].source == src),
+                       t * self.time_length + i - self.queue_states[t][i].startTime,
+                       0)
+                )
+        else:
+            for i in range(self.queue_size):
+                latency_list.append(
+                    If(And(i < self.deq_cnt[t], self.queue_states[t][i].source == src),
+                       t * self.time_length + i - self.queue_states[t][i].startTime,
+                       0)
+                )
+        return Sum(*latency_list)
+
     """
      Logical topology: tail_queue -> src -> head_queue
      credit-based flow control：
@@ -213,15 +248,21 @@ class HNQueue:
     """
 
     # TODO: 当前 queue 不仅是 credit-based flow control，还连接了cache
-    def add_credit_flow_control_constraints(self, dst_queues: [HNQueue], time_length):
+    def add_credit_flow_control_constraints(self, dst_queues: [HNQueue]):
         assert self.credit_based
 
         # 添加各个时刻的credit值及其约束
-        for t in range(self.time_steps - 1):
+        for t in range(self.time_steps):
             credit_replenish_sum = Sum(*[q.get_replenishment(self.src, t) for q in dst_queues])
-            name = f'cons_{self.src}_credit_upt_at_time_{t}'
-            cons = self.credit_cnt[t + 1] == self.credit_cnt[t] - self.input_cnt[t] + credit_replenish_sum
-            self.solver.add_expr(name, cons)
+
+            self.solver.add_expr("tmp", And(
+                self.processed_cnt[t] == credit_replenish_sum,
+                self.latency_avg_list[t] == Sum(*[q.__get_replenishment_latency_sum(self.src, t) for q in dst_queues]) / credit_replenish_sum
+            ))
+            if t + 1 < self.time_steps:
+                name = f'cons_{self.src}_credit_upt_at_time_{t}'
+                cons = self.credit_cnt[t + 1] == self.credit_cnt[t] - self.input_cnt[t] + credit_replenish_sum
+                self.solver.add_expr(name, cons)
 
         for t in range(self.time_steps):
             remain = self.get_remain_cnt(t)
@@ -244,7 +285,7 @@ class HNQueue:
                     And(remain <= i, i < remain + self.input_cnt[t]),
                     And(self.queue_states[t][i].isValid,
                         self.queue_states[t][i].source == self.src,
-                        self.queue_states[t][i].startTime == t * time_length + i
+                        self.queue_states[t][i].startTime == t * self.time_length + i
                         )
                 )
                 self.solver.add_expr(name, cons)
@@ -438,5 +479,29 @@ class HNQueue:
                     *[self.input_cnt[t] == self.cap_cnt[t] for t in range(self.time_steps)]
                 )
             self.solver.add_expr(f'set_max_input_for_{self.queue_name}', cons)
+
+    # def get_avg_latency_expr(self, src: str, time_length=1) -> ExprRef:
+    #     src_sort = self.solver.get_source_const(src)
+    #     if src_sort is None:
+    #         return 0
+    #
+    #     latency_list = []
+    #     for t in range(self.time_steps):
+    #         for i in range(self.queue_size):
+    #             lat = If(
+    #                 i < self.deq_cnt[t],
+    #                 t * time_length + i - self.queue_states[t][i].startTime,
+    #                 0
+    #             )
+    #             latency_list.append(lat)
+    #     deq_cnt_all = Sum(*[self.deq_cnt[t] for t in range(self.time_steps)])
+    #
+    #     return Sum(latency_list)/deq_cnt_all
+
+    def get_input_cnt_all(self):
+        return Sum(*[self.input_cnt[t] for t in range(self.time_steps)])
+
+    def get_deq_cnt_all(self):
+        return Sum(*[self.deq_cnt[t] for t in range(self.time_steps)])
 
 

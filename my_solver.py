@@ -57,12 +57,12 @@ class MySolver:
 
     def verify(self, ifsave=True, print_cons:bool =False):
         if self.solver.check() == sat:
-            self.model = self.solver.model()
             print('SAT')
+            self.model = self.solver.model()
             self.save_model(smt_model_filepath)
         else:
             print('UNSAT')
-            self.prinf_unsat_core(print_cons)
+            # self.prinf_unsat_core(print_cons)
 
         self.save_smt2(smt2_filepath)
 

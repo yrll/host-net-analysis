@@ -3,6 +3,7 @@ from my_solver import CPU, IIO
 from queue_model import HNQueue
 from queue_scheduling import *
 from cache_model import HNCache
+from host_topology import HostNetwork
 
 
 def cache_test():
@@ -19,18 +20,16 @@ def cache_test():
 
     cache = HNCache(solver=my_solver, cache_name='llc', time_steps=time_steps, cache_size=4)
 
-    # 初始化队列
-    for q in queues.values():
-        q.add_self_common_constraints()
+    host_net = HostNetwork(queues, cache, my_solver)
+    host_net.initialize()
     # 队列调度
     add_fifo_constraints(queues['mc'], queues['cha'], my_solver)
     add_fifo_constraints(queues['cha'], queues[CPU], my_solver)
 
-    cache.add_init_constraints()
     cache.add_cache_replace_constraints(queues['mc'])
     cache.add_cache_filter_constraints(queues['cha'])
     # request起点
-    queues[CPU].add_credit_flow_control_constraints([queues['mc'], queues['cha']], time_length=4)
+    queues[CPU].add_credit_flow_control_constraints([queues['mc'], queues['cha']])
     # request终点
     queues['mc'].add_self_dequeue_constraints(4)
 
@@ -58,7 +57,7 @@ def cache_test():
     #         queues['cha'].get_hit_cnt(t) for t in range(time_steps)
     #     ]) < 1
     # )
-    # my_solver.add_expr('perf_spec', cons)
+    my_solver.add_expr('perf_spec', cons)
 
     my_solver.verify(print_cons=True)
     prinf_trace(my_solver=my_solver, show_loc=True, queues=[q for q in queues.values()], caches=[cache])

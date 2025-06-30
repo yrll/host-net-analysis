@@ -159,18 +159,18 @@ def add_round_robin_constraints(q1: HNQueue, q2: HNQueue, q3: HNQueue, solver: M
                                            cons2_ite_q1_cap_not_even)
                             solver.add_expr(name2, cons)
                         elif j < q2_deq_var + q3_deq_var:
+                            # print(f"j: {j}, q2_deq: {q2_deq_var}, q3_deq: {q3_deq_var}")
                             # 此时q1的元素要么是q2要么是q3中的
                             name1 = f'cons_ite_{q2.queue_name}_deq_less_{q3.queue_name}_deq_at_time_{t}'
-                            cons1_ite_q2_deq_less_q3_deq = If(q2_deq_t_1 < q3_deq_t_1,
-                                                              q1.queue_states[t][idx_i].get_eq_constraints(
-                                                                  q3.queue_states[t - 1][j - q2_deq_var]
-                                                              ),
-                                                              q1.queue_states[t][idx_i].get_eq_constraints(
-                                                                  q2.queue_states[t - 1][j - q3_deq_var]
-                                                              )
-                                                              )
-                            cons = Implies(And(commenCond, j >= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
-                                           cons1_ite_q2_deq_less_q3_deq)
+                            if q2_deq_var < q3_deq_var:
+                                cons = Implies(And(commenCond, j >= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
+                                               q1.queue_states[t][idx_i].get_eq_constraints(
+                                                   q3.queue_states[t - 1][j - min(q2_deq_var, q3_deq_var)]))
+                            else:
+                                cons = Implies(And(commenCond, j >= 2 * z3_min(q2_deq_t_1, q3_deq_t_1)),
+                                               q1.queue_states[t][idx_i].get_eq_constraints(
+                                                   q2.queue_states[t - 1][j - min(q2_deq_var, q3_deq_var)]))
+
                             solver.add_expr(name1, cons)
 
             # For q1_remain_cnt(t) + q2_deq_cnt(t) < i < m: q1(t)[i].isValid == false

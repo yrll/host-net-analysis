@@ -9,7 +9,7 @@ from z3 import *
 
 from my_solver import MySolver
 from queue_model import ReqElem, HNQueue
-from util import concat_name, concat_tuple_or_str
+from util import concat_name, concat_tuple_or_str, count_occurrences
 
 
 class CacheElem:
@@ -38,6 +38,7 @@ class CacheElem:
 
 class HNCache:
     def __init__(self, solver: MySolver, cache_name: str, time_steps: int, cache_size: int):
+        self.time_length = None
         ctx = solver.ctx
         self.solver = solver
         self.cache_name = cache_name
@@ -46,7 +47,6 @@ class HNCache:
         self.cache_states = {}
         # 辅助变量：记录当前时刻，每个cacheline，在下一时刻是否需要被替换
         self.replace_states = {}
-        # self.replace_cnt = [Int(f'')]
 
         # 初始化各个时刻的队列状态
         for t in range(self.time_steps):
@@ -58,6 +58,9 @@ class HNCache:
                 CacheElem(name=f"{cache_name}_index_{i}_time_{t}", ctx=ctx)
                 for i in range(cache_size)
             ]
+
+    def set_time_length(self, l):
+        self.time_length = l
 
     # 初始状态没有valid的cache
     def add_init_constraints(self):
@@ -127,8 +130,9 @@ class HNCache:
                 name = f'cons_{self.cache_name}_replace_index_{i}_at_time_{t}'
                 cache_i_eq_any_deq_elem = Or(*[If(j < deq_cnt,
                                                   And(cache_state_t_plus_1[i].loc == queue_state[j].reqLoc,
-                                                      cache_state_t_plus_1[i].lastAcc == t + 1,
-                                                      cache_state_t_plus_1[i].isValid,),
+                                                      cache_state_t_plus_1[i].lastAcc == t * self.time_length + j,
+                                                      cache_state_t_plus_1[i].isValid,
+                                                      cache_state_t_plus_1[i].hits == 1),
                                                   False)
                                                for j in range(queue.queue_size)])
                 cons = If(replace_state[i],

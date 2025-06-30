@@ -4,6 +4,7 @@ import json
 from z3 import *
 from z3.z3util import get_vars
 
+from host_topology import HostNetwork
 from my_solver import CPU, IIO
 from queue_model import HNQueue
 from queue_scheduling import *
@@ -74,190 +75,50 @@ def prinf_trace(my_solver: MySolver, show_loc: bool = True, queues: [HNQueue] = 
             print(tabulate(state_rows, headers=headers, tablefmt='grid'))
 
 
-
-# def host_net_test1():
-#     # 自定义主机网络拓扑和配置
-#     time_steps = 6
-#     my_solver = MySolver()
-#
-#     queues = {
-#         CPU: HNQueue(solver=my_solver, queue_name=CPU, time_steps=time_steps, queue_size=3, cached=False,
-#                        credit_based=True, src=CPU),
-#         IIO: HNQueue(solver=my_solver, queue_name=IIO, time_steps=time_steps, queue_size=2, cached=False,
-#                        credit_based=True, src=IIO),
-#         'cha_raw': HNQueue(solver=my_solver, queue_name='cha_raw', time_steps=time_steps, queue_size=6, cached=True),
-#         'cha_filtered': HNQueue(solver=my_solver, queue_name='cha_filtered', time_steps=time_steps, queue_size=6,
-#                                 cached=False),
-#         'mc': HNQueue(solver=my_solver, queue_name='mc', time_steps=time_steps, queue_size=7, cached=False),
-#     }
-#
-#     llc = HNCache(solver=my_solver, cache_name='llc', time_steps=time_steps, cache_size=5)
-#
-#     # 初始化队列
-#     for q in queues.values():
-#         q.add_self_common_constraints()
-#
-#     # 初始化cache
-#     llc.add_init_constraints()
-#
-#     # 队列调度
-#     add_fifo_constraints(queues['mc'], queues['cha_filtered'], my_solver)
-#     add_round_robin_constraints(queues['cha_raw'], queues[CPU], queues[IIO], my_solver)
-#
-#     # cache过滤
-#     llc.add_cache_filter_constraints(queues['cha_raw'], queues['cha_filtered'])
-#     llc.add_cache_replace_constraints(queues['mc'])
-#     # request起点
-#     queues[CPU].add_credit_flow_control_constraints(queues['cha_raw'], queues['mc'])
-#     queues[IIO].add_credit_flow_control_constraints(queues['cha_raw'], queues['mc'])
-#
-#     # request终点
-#     queues['mc'].add_self_dequeue_constraints()
-#
-#     # 添加性能约束
-#     cons = Sum(
-#         *[
-#             queues['mc'].deq_cnt[t] for t in range(time_steps)
-#         ]
-#     ) > 1
-#     my_solver.add_expr('perf_spec', cons)
-#
-#     my_solver.verify()
-#
-#
-# def host_net_test2():
-#     # 自定义主机网络拓扑和配置
-#     time_steps = 6
-#     my_solver = MySolver()
-#
-#     queues = {
-#         CPU: HNQueue(solver=my_solver, queue_name=CPU, time_steps=time_steps, queue_size=3, cached=False,
-#                        credit_based=True, src=CPU),
-#         IIO: HNQueue(solver=my_solver, queue_name=IIO, time_steps=time_steps, queue_size=2, cached=False,
-#                        credit_based=True, src=IIO),
-#         'cha': HNQueue(solver=my_solver, queue_name='cha', time_steps=time_steps, queue_size=6, cached=False),
-#         'mc': HNQueue(solver=my_solver, queue_name='mc', time_steps=time_steps, queue_size=7, cached=False),
-#     }
-#
-#     # llc = HNCache(solver=my_solver, cache_name='llc', time_steps=time_steps, cache_size=5)
-#
-#     # 初始化队列
-#     for q in queues.values():
-#         q.add_self_common_constraints()
-#
-#     # 初始化cache
-#     # llc.add_init_constraints()
-#
-#     # 队列调度
-#     add_fifo_constraints(queues['mc'], queues['cha'], my_solver)
-#     add_round_robin_constraints(queues['cha'], queues[CPU], queues[IIO], my_solver)
-#
-#     # cache过滤
-#     # llc.add_cache_filter_constraints(queues['cha_raw'], queues['cha_filtered'])
-#     # llc.add_cache_replace_constraints(queues['mc'])
-#     # request起点
-#     queues[CPU].add_credit_flow_control_constraints(queues['mc'])
-#     queues[IIO].add_credit_flow_control_constraints(queues['mc'])
-#
-#     # request终点
-#     queues['mc'].add_self_dequeue_constraints()
-#
-#     # 添加性能约束
-#     cons = Sum(
-#         *[
-#             queues['mc'].deq_cnt[t] for t in range(time_steps)
-#         ]
-#     ) > 1
-#     # my_solver.add_expr('perf_spec', cons)
-#
-#     my_solver.verify()
-
-def rr_test():
+def host_net_test1():
     # 自定义主机网络拓扑和配置
-    time_steps = 3
-    my_solver = MySolver()
+    time_steps = 10
 
+    my_solver = MySolver()
     queues = {
-        CPU: HNQueue(solver=my_solver, queue_name=CPU, time_steps=time_steps, queue_size=3, cached=False,
-                     credit_based=True, src=CPU),
-        IIO: HNQueue(solver=my_solver, queue_name=IIO, time_steps=time_steps, queue_size=3, cached=False,
-                     credit_based=True, src=IIO),
+        CPU: HNQueue(solver=my_solver, queue_name=CPU, time_steps=time_steps, queue_size=2, credit_based=True, src=CPU),
+        IIO: HNQueue(solver=my_solver, queue_name=IIO, time_steps=time_steps, queue_size=5, credit_based=True,
+                     src=IIO),
+        'cha': HNQueue(solver=my_solver, queue_name='cha', time_steps=time_steps, queue_size=6, cached=True),
         'mc': HNQueue(solver=my_solver, queue_name='mc', time_steps=time_steps, queue_size=4, cached=False),
     }
+    llc = HNCache(solver=my_solver, cache_name='llc', time_steps=time_steps, cache_size=8)
 
-    # 初始化队列
-    for q in queues.values():
-        q.add_self_common_constraints()
+    host_net = HostNetwork(queues=queues, cache=llc, solver=my_solver)
+
+    host_net.initialize()
+
     # 队列调度
-    add_round_robin_constraints(queues['mc'], queues[IIO], queues[CPU], my_solver)
+    add_fifo_constraints(queues['mc'], queues['cha'], my_solver)
+    add_round_robin_constraints(queues['cha'], queues[CPU], queues[IIO], my_solver)
 
-    # queues[CPU].set_init_state_test()
-    # queues[IIO].set_init_state_test()
-
+    # cache过滤
+    llc.add_cache_filter_constraints(queues['cha'])
+    llc.add_cache_replace_constraints(queues['mc'])
     # request起点
-    queues[CPU].add_credit_flow_control_constraints(queues['mc'])
-    queues[IIO].add_credit_flow_control_constraints(queues['mc'])
+    queues[CPU].add_credit_flow_control_constraints([queues['cha'], queues['mc']])
+    queues[IIO].add_credit_flow_control_constraints([queues['cha'], queues['mc']])
 
     # request终点
-    queues['mc'].add_self_dequeue_constraints()
-
-    # 设置起点输入
-    queues[CPU].set_max_input_constraints()
-    queues[IIO].set_max_input_constraints()
+    queues['mc'].add_self_dequeue_constraints(fixed_deq=host_net.time_length)
+    # queues[CPU].set_max_input_constraints()
+    # queues[IIO].set_max_input_constraints()
 
     # 添加性能约束
-    cons = Sum(
-        *[
-            queues['mc'].deq_cnt[t] for t in range(time_steps)
-        ]
-    ) > 5
-    my_solver.add_expr('perf', cons)
-
-    my_solver.verify(print_cons=True)
-    prinf_trace(my_solver=my_solver, show_loc=True, queues=[q for q in queues.values()])
-
-
-def fifo_test():
-    # 自定义主机网络拓扑和配置
-    time_steps = 5
-    my_solver = MySolver()
-
-    queues = {
-        CPU: HNQueue(solver=my_solver, queue_name=CPU, time_steps=time_steps, queue_size=3, cached=False,
-                     credit_based=True, src=CPU),
-        'mc': HNQueue(solver=my_solver, queue_name='mc', time_steps=time_steps, queue_size=2, cached=False),
-    }
-
-    # 初始化队列
-    for q in queues.values():
-        q.add_self_common_constraints()
-    # 队列调度
-    add_fifo_constraints(queues['mc'], queues[CPU], my_solver)
-
-    # request起点
-    queues[CPU].add_credit_flow_control_constraints(queues['mc'])
-
-    # request终点
-    queues['mc'].add_self_dequeue_constraints()
-    queues[CPU].set_max_input_constraints()
-
-    # 添加性能约束
-    cons = Sum(
-        *[
-            queues['mc'].deq_cnt[t] for t in range(time_steps)
-        ]
-    ) > 6
-    # cons = queues[CPU].input_cnt[0] == queues[CPU].queue_size
-    # cons = And(
-    #     *[
-    #         queues['cpu'].input_cnt[t] > 0 for t in range(time_steps)
-    #     ]
-    # )
-    # my_solver.add_expr('perf_spec', cons)
+    cons = And(queues[CPU].get_processed_sum() > queues[IIO].get_processed_sum())
+    cons = And(queues[CPU].get_latency_avg() > queues[IIO].get_latency_avg(),
+               queues[CPU].get_processed_sum() == queues[IIO].get_processed_sum(),
+               queues[IIO].get_processed_sum() > 6)
+    my_solver.add_expr('perf_spec', cons)
 
     my_solver.verify()
-    prinf_trace(my_solver=my_solver, show_loc=True, queues=[q for q in queues.values()])
+    prinf_trace(my_solver, True, list(queues.values()), [llc])
 
 
 if __name__ == "__main__":
-    pass
+    host_net_test1()
