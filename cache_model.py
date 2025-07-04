@@ -130,7 +130,7 @@ class HNCache:
                 name = f'cons_{self.cache_name}_replace_index_{i}_at_time_{t}'
                 cache_i_eq_any_deq_elem = Or(*[If(j < deq_cnt,
                                                   And(cache_state_t_plus_1[i].loc == queue_state[j].reqLoc,
-                                                      cache_state_t_plus_1[i].lastAcc == t * self.time_length + j,
+                                                      cache_state_t_plus_1[i].lastAcc == t,
                                                       cache_state_t_plus_1[i].isValid,
                                                       cache_state_t_plus_1[i].hits == 1),
                                                   False)

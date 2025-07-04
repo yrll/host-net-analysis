@@ -172,10 +172,10 @@ class HNQueue:
             # 每个时刻完成的请求总数
             self.processed_cnt = [Int(name=f"{src}_processed_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
             # 每个时刻完成的请求的平均时延
-            self.latency_avg_list = [Int(name=f"{src}_avg_latency_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
+            self.latency_cnt_list = [Int(name=f"{src}_avg_latency_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
 
     def get_latency_avg(self):
-        return Sum(*[self.latency_avg_list[t] for t in range(self.time_steps)]) / self.get_processed_sum()
+        return Sum(*[self.latency_cnt_list[t] for t in range(self.time_steps)]) / self.get_processed_sum()
 
     def get_processed_sum(self):
         return Sum(*[self.processed_cnt[t] for t in range(self.time_steps)])
@@ -225,14 +225,14 @@ class HNQueue:
             for i in range(self.queue_size):
                 latency_list.append(
                     If(And(self.hit[t][i], self.queue_states[t][i].source == src),
-                       t * self.time_length + i - self.queue_states[t][i].startTime,
+                       t - self.queue_states[t][i].startTime,
                        0)
                 )
         else:
             for i in range(self.queue_size):
                 latency_list.append(
-                    If(And(i < self.deq_cnt[t], self.queue_states[t][i].source == src),
-                       t * self.time_length + i - self.queue_states[t][i].startTime,
+                    If(And(self.queue_states[t][i].isValid, i < self.deq_cnt[t], self.queue_states[t][i].source == src),
+                       t - self.queue_states[t][i].startTime,
                        0)
                 )
         return Sum(*latency_list)
@@ -257,7 +257,7 @@ class HNQueue:
 
             self.solver.add_expr("tmp", And(
                 self.processed_cnt[t] == credit_replenish_sum,
-                self.latency_avg_list[t] == Sum(*[q.__get_replenishment_latency_sum(self.src, t) for q in dst_queues]) / credit_replenish_sum
+                self.latency_cnt_list[t] == Sum(*[q.__get_replenishment_latency_sum(self.src, t) for q in dst_queues])
             ))
             if t + 1 < self.time_steps:
                 name = f'cons_{self.src}_credit_upt_at_time_{t}'
@@ -285,7 +285,7 @@ class HNQueue:
                     And(remain <= i, i < remain + self.input_cnt[t]),
                     And(self.queue_states[t][i].isValid,
                         self.queue_states[t][i].source == self.src,
-                        self.queue_states[t][i].startTime == t * self.time_length + i
+                        self.queue_states[t][i].startTime == t
                         )
                 )
                 self.solver.add_expr(name, cons)

@@ -1,7 +1,7 @@
 import json
 
 from tabulate import tabulate
-from z3 import Context, Solver, EnumSort, ExprRef, Bool, sat, ModelRef
+from z3 import Context, Solver, EnumSort, ExprRef, Bool, sat, ModelRef, unsat
 
 # 以下是合法的source起点
 CPU = 'cpu'
@@ -56,13 +56,14 @@ class MySolver:
         return Bool(name=name, ctx=self.ctx)
 
     def verify(self, ifsave=True, print_cons:bool =False):
-        if self.solver.check() == sat:
+        if self.solver.check() == unsat:
+            print('UNSAT')
+            # self.prinf_unsat_core(print_cons)
+
+        else:
             print('SAT')
             self.model = self.solver.model()
             self.save_model(smt_model_filepath)
-        else:
-            print('UNSAT')
-            # self.prinf_unsat_core(print_cons)
 
         self.save_smt2(smt2_filepath)
 

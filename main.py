@@ -77,7 +77,7 @@ def prinf_trace(my_solver: MySolver, show_loc: bool = True, queues: [HNQueue] = 
 
 def host_net_test1():
     # 自定义主机网络拓扑和配置
-    time_steps = 10
+    time_steps = 9
 
     my_solver = MySolver()
     queues = {
@@ -105,16 +105,15 @@ def host_net_test1():
     queues[IIO].add_credit_flow_control_constraints([queues['cha'], queues['mc']])
 
     # request终点
-    queues['mc'].add_self_dequeue_constraints(fixed_deq=host_net.time_length)
+    queues['mc'].add_self_dequeue_constraints()
     # queues[CPU].set_max_input_constraints()
     # queues[IIO].set_max_input_constraints()
 
     # 添加性能约束
     cons = And(queues[CPU].get_processed_sum() > queues[IIO].get_processed_sum())
-    cons = And(queues[CPU].get_latency_avg() > queues[IIO].get_latency_avg(),
-               queues[CPU].get_processed_sum() == queues[IIO].get_processed_sum(),
-               queues[IIO].get_processed_sum() > 6)
+    cons = And(queues[CPU].get_latency_avg() > queues[IIO].get_latency_avg())
     my_solver.add_expr('perf_spec', cons)
+    print("ADD ALL CONS")
 
     my_solver.verify()
     prinf_trace(my_solver, True, list(queues.values()), [llc])
