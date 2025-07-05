@@ -165,7 +165,6 @@ class HNQueue:
             # 当前时刻的credit数量，当前时刻最多入队的数量小于等于当前时刻的credit
             self.credit_cnt = [Int(name=f'{src}_credit_cnt_at_time_{t}', ctx=ctx) for t in range(self.time_steps)]
 
-
         if self.src is not None:
             # 每个时刻的请求输入总数（可以是 Int 变量，支持约束建模）
             self.input_cnt = [Int(name=f"{src}_input_cnt_at_time_{t}", ctx=ctx) for t in range(time_steps)]
@@ -176,6 +175,16 @@ class HNQueue:
 
     def get_latency_avg(self):
         return Sum(*[self.latency_cnt_list[t] for t in range(self.time_steps)]) / self.get_processed_sum()
+
+    def get_latency_sum(self):
+        return Sum(*[self.latency_cnt_list[t] for t in range(self.time_steps)])
+
+    # self的平均时延是否比queue大
+    def set_avg_lantency_ge(self, queue: HNQueue):
+        assert isinstance(queue, HNQueue)
+        # latency_sum1/processed_sum1 > latency_sum2/processed_sum2 等同于 latency_sum1*processed_sum2 > latency_sum2*processed_sum1
+        self.solver.add_expr(f"{self.queue_name}_avg_latency_ge_{queue.queue_name}",
+                             self.get_latency_sum() * queue.get_processed_sum() > queue.get_latency_sum() * self.get_processed_sum())
 
     def get_processed_sum(self):
         return Sum(*[self.processed_cnt[t] for t in range(self.time_steps)])
@@ -430,7 +439,8 @@ class HNQueue:
                 q_states[t] = state
         else:
             q_states = {
-                t: [self.queue_states[t][i].print_model_value(self.solver.model, showLoc) for i in range(self.queue_size)]
+                t: [self.queue_states[t][i].print_model_value(self.solver.model, showLoc) for i in
+                    range(self.queue_size)]
                 for t in range(self.time_steps)
             }
         return q_states
@@ -480,6 +490,14 @@ class HNQueue:
                 )
             self.solver.add_expr(f'set_max_input_for_{self.queue_name}', cons)
 
+    # 针对source节点设置：每个时刻输入值最大化
+    def set_zero_input_constraints(self):
+        if self.src is not None:
+            cons = And(
+                *[self.input_cnt[t] == 0 for t in range(self.time_steps)]
+            )
+            self.solver.add_expr(f'set_zero_input_for_{self.queue_name}', cons)
+
     # def get_avg_latency_expr(self, src: str, time_length=1) -> ExprRef:
     #     src_sort = self.solver.get_source_const(src)
     #     if src_sort is None:
@@ -503,5 +521,3 @@ class HNQueue:
 
     def get_deq_cnt_all(self):
         return Sum(*[self.deq_cnt[t] for t in range(self.time_steps)])
-
-
